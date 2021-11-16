@@ -7,66 +7,6 @@ import pycocotools.mask as m
 from pycocotools.coco import COCO
 
 
-def absolute_mask_to_normalized_mask(
-    segmentation: List[float], width: int, height: int
-):
-    """Convert segmentation map from absolute to normalized coordinates
-
-    Parameters
-    ----------
-    segmentation : list of float
-        Segmentation map in absolute coordinates
-    width : int
-        Width of image
-    height : int
-        Height of image
-
-    Returns
-    -------
-    segmentation : list of float
-        Segmentation map converted to normalized coordinates
-    """
-    # This function treats the original copy of segmentation as immutable
-    segmentation = segmentation.copy()
-
-    # Segmentation is a list of even length with every 2 entries being (x, y) coordinates
-    # of the next point to construct the polygon
-    for i in range(0, len(segmentation), 2):
-        segmentation[i] /= width
-        segmentation[i + 1] /= height
-    return segmentation
-
-
-def normalized_mask_to_absolute_mask(
-    segmentation: List[float], width: int, height: int
-) -> List[float]:
-    """Convert segmentation map from normalized to absolute coordinates
-
-    Parameters
-    ----------
-    segmentation : list of float
-        Segmentation map in normalized coordinates
-    width : int
-        Width of image
-    height : int
-        Height of image
-
-    Returns
-    -------
-    segmentation : list of float
-        Segmentation map converted to absolute coordinates
-    """
-    # This function treats the original copy of segmentation as immutable
-    segmentation = segmentation.copy()
-
-    # Segmentation is a list of even length with every 2 entries being (x, y) coordinates
-    # of the next point to construct the polygon
-    for i in range(0, len(segmentation), 2):
-        segmentation[i] = np.round(segmentation[i] * width)
-        segmentation[i + 1] = np.round(segmentation[i + 1] * height)
-    return segmentation
-
-
 def convert_segmentation(
     segmentation: List[Union[float, int]],
     source_format: str,
@@ -108,7 +48,7 @@ def convert_segmentation(
 
     # The intermediate segmentation mask will always be "coco"
     if source_format == "aml_coco" or source_format == "yolo":
-        segmentation = normalized_mask_to_absolute_mask(
+        segmentation = _normalized_mask_to_absolute_mask(
             segmentation, width=image_width, height=image_height
         )
     elif source_format == "coco":
@@ -116,12 +56,72 @@ def convert_segmentation(
         pass
 
     if target_format == "aml_coco" or target_format == "yolo":
-        segmentation = absolute_mask_to_normalized_mask(
+        segmentation = _absolute_mask_to_normalized_mask(
             segmentation, width=image_width, height=image_height
         )
     elif target_format == "coco":
         pass
 
+    return segmentation
+
+
+def _absolute_mask_to_normalized_mask(
+    segmentation: List[float], width: int, height: int
+):
+    """Convert segmentation map from absolute to normalized coordinates
+
+    Parameters
+    ----------
+    segmentation : list of float
+        Segmentation map in absolute coordinates
+    width : int
+        Width of image
+    height : int
+        Height of image
+
+    Returns
+    -------
+    segmentation : list of float
+        Segmentation map converted to normalized coordinates
+    """
+    # This function treats the original copy of segmentation as immutable
+    segmentation = segmentation.copy()
+
+    # Segmentation is a list of even length with every 2 entries being (x, y) coordinates
+    # of the next point to construct the polygon
+    for i in range(0, len(segmentation), 2):
+        segmentation[i] /= width
+        segmentation[i + 1] /= height
+    return segmentation
+
+
+def _normalized_mask_to_absolute_mask(
+    segmentation: List[float], width: int, height: int
+) -> List[float]:
+    """Convert segmentation map from normalized to absolute coordinates
+
+    Parameters
+    ----------
+    segmentation : list of float
+        Segmentation map in normalized coordinates
+    width : int
+        Width of image
+    height : int
+        Height of image
+
+    Returns
+    -------
+    segmentation : list of float
+        Segmentation map converted to absolute coordinates
+    """
+    # This function treats the original copy of segmentation as immutable
+    segmentation = segmentation.copy()
+
+    # Segmentation is a list of even length with every 2 entries being (x, y) coordinates
+    # of the next point to construct the polygon
+    for i in range(0, len(segmentation), 2):
+        segmentation[i] = np.round(segmentation[i] * width)
+        segmentation[i + 1] = np.round(segmentation[i + 1] * height)
     return segmentation
 
 
