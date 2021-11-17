@@ -1,4 +1,19 @@
 """
+Training script for Semantic Segmentation Model
+Used in conjunction with AML Training Pipeline
+
+Example Trial:
+python train.py \
+    --train-labels-filepath data/train_labels/labels.csv \
+    --val-labels-filepath data/val_labels/labels.csv \
+    --class-dict-path data/class_dict.csv \
+    --labels-type rgb-masks \
+    --model deeplab \
+    --pretrained true \
+    --loss cross_entropy \
+    --epochs 10 \
+    --batch-size 4 \
+    --learning-rate 0.001
 """
 import argparse
 import copy
@@ -7,23 +22,20 @@ import multiprocessing
 import time
 import uuid
 from os.path import join
-from pathlib import Path
-from typing import Dict, Tuple
-import warnings
+from typing import Dict, List, Tuple
 
 import albumentations as A
 import mlflow
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from config.augmentation import preprocessing, augmentation
-from src.datasets.semantic_segmentation import (
-    MaskLabelsDataset,
-    SemanticSegmentationDataset,
-)
+from src.datasets.mask_labels import MaskLabelsDataset
+from src.datasets.semantic_segmentation import SemanticSegmentationDataset
 from src.losses.loss import semantic_segmentation_class_balancer
-from src.metrics.metrics import get_semantic_segmentation_metrics, log_metrics
+from src.metrics.metrics import semantic_segmentation_metrics
 from src.models.deeplabv3 import DeepLabV3
 from src.models.fcn_resnet50 import FCNResNet50
 
@@ -43,7 +55,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def log_metrics(results: Dict[str, torch.Tensor], classes: List[str], split: str):
+def log_metrics(results: Dict[str, torch.Tensor], classes: int, split: str):
     """Log metrics to stdout and AML
 
     Parameters
@@ -61,9 +73,6 @@ def log_metrics(results: Dict[str, torch.Tensor], classes: List[str], split: str
     # Get script logger
     log = logging.getLogger(__name__)
 
-    # Get AML context
-    run = Run.get_context()
-
     split = split.capitalize()
 
     for metric_name, result in results.items():
@@ -71,17 +80,14 @@ def log_metrics(results: Dict[str, torch.Tensor], classes: List[str], split: str
         if "mean" in metric_name:
             result = float(result)
 
-            if isinstance(run, _SubmittedRun):
-                run.parent.log(log_name, result)
-            run.log(log_name, result)
+            mlflow.log_metric(f"mean_{metric_name}", result)
         elif "per_class" in metric_name:
-            result = {c: float(r) for c, r in zip(classes, result)}
+            result = {
+                f"{metric_name}_class_{c}": float(r)
+                for c, r in zip(range(classes), result)
+            }
 
-            # Steps are children the experiment they belong to so the parent
-            # also needs a log
-            if isinstance(run, _SubmittedRun):
-                run.parent.log_row(log_name, **result)
-            run.log_row(log_name, **result)
+            mlflow.log_metrics(result)
 
         log.info(f"{log_name}: {result}")
 
@@ -91,8 +97,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-labels-filepath", type=str, required=True)
     parser.add_argument("--val-labels-filepath", type=str, required=True)
+    parser.add_argument("--class-dict-path", type=str, required=True)
     parser.add_argument("--labels-type", type=str, required=True)
-    parser.add_argument("--classes", type=int, required=True)
     parser.add_argument("--model", type=str, default="deeplab")
     parser.add_argument("--pretrained", type=str2bool, default=True)
     parser.add_argument("--loss", type=str, default="balanced_cross_entropy")
@@ -116,22 +122,29 @@ if __name__ == "__main__":
     parser.add_argument("--cache-strategy", type=str, default="none")
     args = parser.parse_args()
 
-    fh = logging.FileHandler(str(args.log_file))
-    log.addHandler(fh)
+    # fh = logging.FileHandler(str(args.log_file))
+    # log.addHandler(fh)
 
     train_labels_filepath = str(args.train_labels_filepath)
     val_labels_filepath = str(args.val_labels_filepath)
-    labels_type = str(args.labels_type)
-    classes = int(args.classes)
+    class_dict_path = str(args.class_dict_path)
+    class_dict = pd.read_csv(class_dict_path)
 
-    if args.cache_dir is not None:
-        cache_dir = str(args.cache_dir)
+    if "background" in class_dict["name"]:
+        n_classes = len(class_dict)
     else:
-        cache_dir = join("/tmp", str(uuid.uuid4()))
-    cache_strategy = str(args.cache_strategy)
+        n_classes = len(class_dict) + 1
+
+    labels_type = str(args.labels_type)
+
+    # if args.cache_dir is not None:
+    #     cache_dir = str(args.cache_dir)
+    # else:
+    #     cache_dir = join("/tmp", str(uuid.uuid4()))
+    # cache_strategy = str(args.cache_strategy)
 
     # Model and Loss
-    model_name = str(args.model_name).lower()
+    model_name = str(args.model).lower()
     pretrained = bool(args.pretrained)
     loss = str(args.loss).lower()
 
@@ -146,6 +159,7 @@ if __name__ == "__main__":
     # batch_validation_perc = float(args.batch_validation_perc)
     batch_validation_perc = 0.95
 
+    # TODO: Deal with these parameters
     patch_dim: Tuple[int, int] = tuple([int(x) for x in args.patch_dim.split(",")])
     resize_dim: Tuple[int, int] = tuple([int(x) for x in args.resize_dim.split(",")])
     iou_thresholds = [float(x) for x in args.iou_thresholds.split(",")]
@@ -178,6 +192,13 @@ if __name__ == "__main__":
     if labels_type == "masks":
         train_dataset = MaskLabelsDataset(train_labels_filepath)
         val_dataset = MaskLabelsDataset(val_labels_filepath)
+    elif labels_type == "rgb-masks":
+        train_dataset = MaskLabelsDataset(
+            train_labels_filepath, mask_format="rgb", class_dict_path=class_dict_path
+        )
+        val_dataset = MaskLabelsDataset(
+            val_labels_filepath, mask_format="rgb", class_dict_path=class_dict_path
+        )
 
     train_dataset = SemanticSegmentationDataset(
         train_dataset,
@@ -198,13 +219,11 @@ if __name__ == "__main__":
     tot_validation_batches = dataset_val_len // batch_size
 
     print(
-        f"Train train_dataset number of images: {dataset_len} | Batch size: {batch_size} | Expected number of batches: {tot_training_batches}"
+        f"Train dataset number of images: {dataset_len} | Batch size: {batch_size} | Expected number of batches: {tot_training_batches}"
     )
     print(
-        f"Validation train_dataset number of images: {dataset_val_len} | Batch size: {batch_size} | Expected number of batches: {tot_validation_batches}"
+        f"Validation dataset number of images: {dataset_val_len} | Batch size: {batch_size} | Expected number of batches: {tot_validation_batches}"
     )
-
-    num_classes: int = len(classes) + 1  # Plus 1 for background
 
     # define training and validation data loaders
     # drop_last True to avoid single instances which throw an error on batch norm layers
@@ -236,10 +255,10 @@ if __name__ == "__main__":
 
     # get the model using our helper function
     if model_name == "fcn" or model_name == "fcn-resnet50":
-        model = FCNResNet50(num_classes, pretrained=pretrained)
+        model = FCNResNet50(n_classes, pretrained=pretrained)
     elif model_name == "deeplab" or model_name == "deeplabv3":
         model = DeepLabV3(
-            num_classes,
+            n_classes,
             pretrained=pretrained,
             is_feature_extracting=pretrained,
         )
@@ -268,7 +287,7 @@ if __name__ == "__main__":
     )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    metrics = get_semantic_segmentation_metrics(num_classes, thresholds=iou_thresholds)
+    metrics = semantic_segmentation_metrics(n_classes, thresholds=iou_thresholds)
     metrics = metrics.to(device)
     best_mean_iou = 0
 
@@ -323,7 +342,7 @@ if __name__ == "__main__":
         # Compute and log training metrics
         results = metrics.compute()
         results["loss"] = train_loss
-        log_metrics(results, classes, split="train")
+        log_metrics(results, n_classes, split="train")
         metrics.reset()
 
         # Switch to eval mode for validation
@@ -358,7 +377,7 @@ if __name__ == "__main__":
         # Compute and log validation metrics
         results = metrics.compute()
         results["loss"] = val_loss
-        log_metrics(results, classes, split="val")
+        log_metrics(results, n_classes, split="val")
         metrics.reset()
 
         mean_iou = float(results["mean_iou_0_5"])
@@ -372,9 +391,10 @@ if __name__ == "__main__":
 
     # Log best model
     model_filename = f"{model_name}_final.pth"
+    model_filepath = join("outputs", model_filename)
     model.load_state_dict(best_model_wts)
-    torch.save(model.state_dict(), join("outputs", model_filename))
-    mlflow.log_artifact(model_filename)
+    torch.save(model.state_dict(), model_filepath)
+    mlflow.log_artifact(model_filepath)
 
     # Log augmentations
     albumentations_filename = "augmentation.json"

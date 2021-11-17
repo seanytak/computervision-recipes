@@ -9,7 +9,9 @@ from typing import Dict, Optional, Tuple
 from torch.utils.data import Dataset
 
 
-def rgb_mask_to_gt_mask(rgb_mask: np.ndarray, rgb_to_label: Dict[Tuple, int]):
+def rgb_mask_to_gt_mask(
+    rgb_mask: np.ndarray, rgb_to_label: Dict[Tuple, int]
+) -> np.ndarray:
     """
     Parameters
     ----------
@@ -48,10 +50,13 @@ def rgb_mask_to_gt_mask(rgb_mask: np.ndarray, rgb_to_label: Dict[Tuple, int]):
 
 
 class MaskLabelsDataset(Dataset):
+
+    _available_mask_formats = set(["class", "rgb"])
+
     def __init__(
         self,
         labels_filepath: str,
-        rgb_masks: bool = False,
+        mask_format: str = "class",
         class_dict_path: Optional[str] = None,
     ):
         """
@@ -59,16 +64,21 @@ class MaskLabelsDataset(Dataset):
         ----------
         labels_filepath : str
             Path to CSV with columns "image_filepath" and "mask_filepath"
-        rgb_masks : bool
-            True if masks are labeled as RGB values
+        mask_format : str
+            Format the masks are in (class, rgb)
         class_dict_path : str
             Path to a class dictionary.
             If rgb_masks is true, then there should be columns, "r", "g", and "b" that specify
             the colors that correspond to a class
         """
+        if mask_format not in self._available_mask_formats:
+            raise ValueError(
+                f"Parameter mask_format must be one of the following values {self._available_mask_formats}"
+            )
         self.labels = pd.read_csv(labels_filepath)
+        self.mask_format = mask_format
 
-        if rgb_masks:
+        if mask_format == "rgb":
             if class_dict_path is None:
                 raise ValueError("If masks are RGB, class_dict_path is required")
             class_dict = pd.read_csv(class_dict_path).to_dict("index")
@@ -88,7 +98,9 @@ class MaskLabelsDataset(Dataset):
 
         mask = Image.open(item["mask_filepath"])
         mask = np.array(mask).astype("uint8")
-        mask = rgb_mask_to_gt_mask(mask, self.rgb_to_class)
+
+        if self.mask_format == "rgb":
+            mask = rgb_mask_to_gt_mask(mask, self.rgb_to_class)
 
         return image, mask
 

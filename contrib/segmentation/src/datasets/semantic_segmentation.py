@@ -393,23 +393,10 @@ class SemanticSegmentationDatasetFullCoverage:
         return self.length
 
 
-class MaskLabelsDataset(torch.utils.data.Dataset):
-    """PyTorch Dataset for semantic segmentation task if masks as images / arrays are already available"""
-
-    def __init__(self, csv_filepath: str):
-        self.labels = pd.read_csv(csv_filepath)
-
-    def __getitem__(self, idx):
-        row = self.labels.iloc[idx]
-        image = np.asarray(PIL.Image.open(row["image_filepath"]))
-        mask = np.asarray(PIL.Image.open(row[idx]))
-        return image, mask
-
-
 class SemanticSegmentationDataset(torch.utils.data.Dataset):
 
     _available_patch_strategies = set(
-        ["resize", "deterministic_center_crop", "crop_all"]
+        ["none", "resize", "deterministic_center_crop", "crop_all"]
     )
 
     # NC24sv3 Azure VMs have 440GiB of RAM
@@ -422,11 +409,10 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         dataset: Dataset,
-        root_dir: str,
         cache_dir: Optional[str] = None,
         preprocessing: Optional[Callable] = None,
         augmentation: Optional[Callable] = None,
-        patch_strategy: str = "deterministic_center_crop",
+        patch_strategy: str = "none",
         patch_dim: Optional[Tuple[int, int]] = None,
         resize_dim: Optional[Tuple[int, int]] = None,
         cache_strategy: Optional[str] = None,
@@ -468,8 +454,9 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
             )
         elif patch_strategy == "crop_all":
             self.dataset = SemanticSegmentationDatasetFullCoverage(dataset, patch_dim)
+        else:
+            self.dataset = dataset
 
-        self.root_dir = root_dir
         self.cache_dir = cache_dir
         self.augmentation = augmentation
         self.preprocessing = preprocessing
@@ -486,9 +473,7 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
         loaded = np.load(cache_filepath)
         image, bboxes, mask, class_labels = (
             loaded["image"],
-            loaded["bboxes"],
             loaded["mask"],
-            loaded["class_labels"],
         )
         return image, bboxes, mask, class_labels
 
@@ -496,9 +481,7 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
         self,
         idx: int,
         image: np.ndarray,
-        bboxes: List[BoundingBox],
         mask: np.ndarray,
-        class_labels: List[int],
     ):
         cache_filepath = self._get_cache_filepath_for_disk(idx)
 
@@ -506,9 +489,7 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
         np.savez_compressed(
             cache_filepath,
             image=image,
-            bboxes=bboxes,
             mask=mask,
-            class_labels=class_labels,
         )
 
     def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -517,9 +498,9 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
             self.cache_strategy == "disk"
             and self._get_cache_filepath_for_disk(idx).exists()
         ):
-            image, bboxes, mask, class_labels = self._read_item_from_disk(idx)
+            image, mask = self._read_item_from_disk(idx)
         else:
-            image, bboxes, mask, class_labels = self.dataset[idx]
+            image, mask = self.dataset[idx]
 
             # Minimal memory needed
             image = image.astype("float32")
@@ -534,7 +515,7 @@ class SemanticSegmentationDataset(torch.utils.data.Dataset):
                 )
 
             if self.cache_strategy == "disk":
-                self._write_item_to_disk(idx, image, bboxes, mask, class_labels)
+                self._write_item_to_disk(idx, image, mask)
 
         # apply augmentations via albumentations
         if self.augmentation:
