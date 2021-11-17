@@ -91,33 +91,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-dir", type=str, required=True)
     parser.add_argument("--val-dir", type=str, required=True)
-    parser.add_argument("--model", type=str, required=False, default="deeplab")
-    parser.add_argument("--pretrained", required=False, type=str2bool, default=True)
-    parser.add_argument(
-        "--loss", type=str, required=False, default="balanced_cross_entropy"
-    )
-    parser.add_argument("--epochs", type=int, required=False, default=10)
-    parser.add_argument("--batch-size", type=int, required=False, default=2)
-    parser.add_argument("--learning-rate", type=float, required=False, default=0.001)
-    parser.add_argument("--aux-loss-weight", type=float, required=False, default=0.4)
+    parser.add_argument("--model", type=str, default="deeplab")
+    parser.add_argument("--pretrained", type=str2bool, default=True)
+    parser.add_argument("--loss", type=str, default="balanced_cross_entropy")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--aux-loss-weight", type=float, default=0.4)
     parser.add_argument(
         "--patch-strategy",
         type=str,
-        required=False,
         default="deterministic_center_crop",
     )
     parser.add_argument(
         "--val-patch-strategy",
         type=str,
-        required=False,
         default="",
     )
     parser.add_argument("--patch-dim", type=str, default="512, 512")
     parser.add_argument("--resize-dim", type=str, default="3632, 5456")
-    parser.add_argument(
-        "--iou-thresholds", type=str, required=False, default="0.5, 0.3"
-    )
-    parser.add_argument("--cache-strategy", type=str, required=False, default="none")
+    parser.add_argument("--iou-thresholds", type=str, default="0.5, 0.3")
+    parser.add_argument("--cache-strategy", type=str, default="none")
     args = parser.parse_args()
 
     fh = logging.FileHandler(str(args.log_file))
@@ -149,7 +143,6 @@ if __name__ == "__main__":
     val_patch_strategy = str(args.val_patch_strategy).lower()
 
     batch_validation_perc = float(args.batch_validation_perc)
-    pretrained: bool = bool(args.pretrained)
 
     patch_dim: Tuple[int, int] = tuple([int(x) for x in args.patch_dim.split(",")])
     resize_dim: Tuple[int, int] = tuple([int(x) for x in args.resize_dim.split(",")])
