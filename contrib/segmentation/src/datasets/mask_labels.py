@@ -46,6 +46,7 @@ def rgb_mask_to_gt_mask(
     colormap = np.empty_like(int_keys, dtype="uint32")
     colormap[key_labels] = list(rgb_to_label.values())
     mask = colormap[color_labels].reshape(rgb_mask.shape[:2])
+    mask = np.array(mask).astype("uint8")
     return mask
 
 
@@ -93,8 +94,9 @@ class MaskLabelsDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray]:
         item = self.labels.iloc[idx]
 
-        image = Image.open(item["image_filepath"]).convert("RGB")
+        image = Image.open(item["image_filepath"])
         image = np.array(image).astype("float32")
+        image = image / 256
 
         mask = Image.open(item["mask_filepath"])
         mask = np.array(mask).astype("uint8")
