@@ -1,0 +1,68 @@
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+type: pipeline
+jobs:
+  assign_split:
+    name: Assign Split
+    type: command
+    command: >-
+      python preprocess.py
+      --images-dir ${{inputs.images_dir}}
+      --masks-dir ${{inputs.masks_dir}}
+      --train-labels-dir ${{outputs.train_labels_dir}}
+      --val-labels-dir ${{outputs.val_labels_dir}}
+    code:
+      local_path: .
+    compute: azureml:cpu-cluster
+    environment:
+      image: python:latest
+    inputs:
+      images_dir: workshop_data/images
+      masks_dir: workshop_data/masks
+    outputs:
+      train_labels_dir:
+        mode: mount
+      val_labels_dir:
+        mode: mount
+  train:
+    name: Train Model
+    type: command
+    command: >-
+      apt update -y &&
+      apt install build-essential -y &&
+      pip install -r requirements.txt &&
+      python train.py
+      --train-labels-filepath ${{inputs.train_labels_dir}}/labels.csv
+      --val-labels-filepath ${{inputs.val_labels_dir}}/labels.csv
+      --class-dict-path ${{inputs.class_dict_path}}
+      --labels-type ${{inputs.labels_type}}
+      --model ${{inputs.model}}
+      --pretrained ${{inputs.pretrained}}
+      --loss ${{inputs.loss}}
+      --epochs ${{inputs.epochs}}
+      --batch-size ${{inputs.batch_size}}
+      --learning-rate ${{inputs.learning_rate}}
+      --momentum ${{inputs.momentum}}
+      --weight-decay ${{inputs.weight_decay}}
+    code:
+      local_path: .
+    compute: azureml:gpu-cluster
+    environment: azureml:AzureML-pytorch-1.7-ubuntu18.04-py37-cpu-inference:21
+    inputs:
+      train_labels_dir: ${{jobs.assign_split.outputs.train_labels_dir}}
+      val_labels_dir: ${{jobs.assign_split.outputs.val_labels_dir}}
+      class_dict_path: workshop_data/class_dict.csv
+      labels_type: rgb-masks
+      model: deeplab
+      pretrained: true
+      batch_size: 2
+      epochs: 10
+      learning_rate: 0.001
+      momentum: 0.9
+      weight_decay: 0.0005
+      loss: cross_entropy
+# distribution:
+#   type: pytorch
+#   process_count: 2
+# azureml:<environment-name>:<version>
+experiment_name: pytorch-semantic-segmentation
+description: Train a Semantic Segmentation Model on the Semantic Segmentation Drone Dataset
