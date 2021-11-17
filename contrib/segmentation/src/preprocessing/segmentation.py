@@ -40,10 +40,8 @@ def convert_segmentation(
     if target_format not in mask_formats:
         raise ValueError(f"Invalid target_format. Expected one of {mask_formats}")
 
+    # No conversion necessary
     if source_format == target_format:
-        warnings.warn(
-            "Parameter source_format and target_format are the same. No conversion was necessary"
-        )
         return segmentation
 
     # The intermediate segmentation mask will always be "coco"
@@ -51,16 +49,11 @@ def convert_segmentation(
         segmentation = _normalized_mask_to_absolute_mask(
             segmentation, width=image_width, height=image_height
         )
-    elif source_format == "coco":
-        # Our intermediate format is coco, so we don't need to do anything
-        pass
 
     if target_format == "aml_coco" or target_format == "yolo":
         segmentation = _absolute_mask_to_normalized_mask(
             segmentation, width=image_width, height=image_height
         )
-    elif target_format == "coco":
-        pass
 
     return segmentation
 
