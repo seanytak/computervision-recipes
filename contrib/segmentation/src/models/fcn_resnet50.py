@@ -1,9 +1,10 @@
 import torch
+import torch.nn as nn
 import torchvision
 from torchvision.models.segmentation.fcn import FCNHead
 
 
-class FCNResnNet50(nn.Module):
+class FCNResNet50(nn.Module):
     def __init__(self, n_classes, pretrained=True, is_feature_extracting: bool = False):
         """Load Fully Convolutional Network with ResNet-50 backbone
 
