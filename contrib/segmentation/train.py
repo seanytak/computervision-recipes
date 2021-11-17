@@ -9,8 +9,10 @@ import uuid
 from os.path import join
 from pathlib import Path
 from typing import Dict, Tuple
+import warnings
 
 import albumentations as A
+import mlflow
 import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
@@ -19,12 +21,11 @@ from config.augmentation import preprocessing, augmentation
 from src.datasets.semantic_segmentation import (
     SemanticSegmentationPyTorchDataset,
     SemanticSegmentationStochasticPatchingDataset,
-    ToySemanticSegmentationDataset,
 )
 from src.losses.loss import semantic_segmentation_class_balancer
 from src.metrics.metrics import get_semantic_segmentation_metrics, log_metrics
-from src.models.deeplabv3 import get_deeplabv3
-from src.models.fcn_resnet50 import get_fcn_resnet50
+from src.models.deeplabv3 import DeepLabV3
+from src.models.fcn_resnet50 import FCNResNet50
 
 
 log = logging.getLogger(__name__)
@@ -42,20 +43,47 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-class DeepLabModelWrapper(nn.Module):
-    def __init__(
-        self, n_classes: int, pretrained: bool, is_feature_extracting: bool
-    ):
-        super().__init__()
-        self.model = get_deeplabv3(
-            n_classes,
-            pretrained=pretrained,
-            is_feature_extracting=is_feature_extracting,
-        )
+def log_metrics(results: Dict[str, torch.Tensor], classes: List[str], split: str):
+    """Log metrics to stdout and AML
 
-    def forward(self, x):
-        with torch.cuda.amp.autocast():
-            return self.model.forward(x)
+    Parameters
+    ----------
+    results : Dict
+        Key is the name of the metric, value is a metric tensor
+        If the metric is a mean, it is a 0-dim tensor
+        If the metric is per class, it is a C-dim tensor (C for number of classes)
+    split : {"train", "val", "test"}
+        Split that the metrics are for
+    """
+    # Import does not appear to work on some non-AML environments
+    from azureml.core.run import Run, _SubmittedRun
+
+    # Get script logger
+    log = logging.getLogger(__name__)
+
+    # Get AML context
+    run = Run.get_context()
+
+    split = split.capitalize()
+
+    for metric_name, result in results.items():
+        log_name = f"[{split}] {metric_name}"
+        if "mean" in metric_name:
+            result = float(result)
+
+            if isinstance(run, _SubmittedRun):
+                run.parent.log(log_name, result)
+            run.log(log_name, result)
+        elif "per_class" in metric_name:
+            result = {c: float(r) for c, r in zip(classes, result)}
+
+            # Steps are children the experiment they belong to so the parent
+            # also needs a log
+            if isinstance(run, _SubmittedRun):
+                run.parent.log_row(log_name, **result)
+            run.log_row(log_name, **result)
+
+        log.info(f"{log_name}: {result}")
 
 
 if __name__ == "__main__":
@@ -63,18 +91,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-dir", type=str, required=True)
     parser.add_argument("--val-dir", type=str, required=True)
-    parser.add_argument("--cache-dir", type=str, required=False, default=None)
+    parser.add_argument("--model", type=str, required=False, default="deeplab")
+    parser.add_argument("--pretrained", required=False, type=str2bool, default=True)
     parser.add_argument(
-        "--model-name", type=str, required=False, default="deeplab"
+        "--loss", type=str, required=False, default="balanced_cross_entropy"
     )
     parser.add_argument("--epochs", type=int, required=False, default=10)
     parser.add_argument("--batch-size", type=int, required=False, default=2)
-    parser.add_argument(
-        "--learning-rate", type=float, required=False, default=0.001
-    )
-    parser.add_argument(
-        "--aux-loss-weight", type=float, required=False, default=0.4
-    )
+    parser.add_argument("--learning-rate", type=float, required=False, default=0.001)
+    parser.add_argument("--aux-loss-weight", type=float, required=False, default=0.4)
     parser.add_argument(
         "--patch-strategy",
         type=str,
@@ -87,29 +112,12 @@ if __name__ == "__main__":
         required=False,
         default="",
     )
-    parser.add_argument("--toy", type=bool, required=False, default=False)
-    parser.add_argument("--classes", type=str, default="1, 2")
-    parser.add_argument(
-        "--log-file", type=str, required=False, default="train.log"
-    )
-    parser.add_argument("--p-hflip", type=float, required=False, default=0.5)
-    parser.add_argument(
-        "--batch-validation-perc", type=float, required=False, default=1.0
-    )
     parser.add_argument("--patch-dim", type=str, default="512, 512")
     parser.add_argument("--resize-dim", type=str, default="3632, 5456")
     parser.add_argument(
-        "--pretrained", required=False, type=str2bool, default=True
-    )
-    parser.add_argument(
         "--iou-thresholds", type=str, required=False, default="0.5, 0.3"
     )
-    parser.add_argument(
-        "--class-balance", type=str2bool, required=False, default=False
-    )
-    parser.add_argument(
-        "--cache-strategy", type=str, required=False, default="none"
-    )
+    parser.add_argument("--cache-strategy", type=str, required=False, default="none")
     args = parser.parse_args()
 
     fh = logging.FileHandler(str(args.log_file))
@@ -127,35 +135,28 @@ if __name__ == "__main__":
         cache_dir = join("/tmp", str(uuid.uuid4()))
     cache_strategy = str(args.cache_strategy)
 
-    model_name = str(args.model_name)
+    # Model and Loss
+    model_name = str(args.model_name).lower()
+    pretrained = bool(args.pretrained)
+    loss = str(args.loss).lower()
+
+    # Hyperparameters
     n_epochs = int(args.epochs)
     batch_size = int(args.batch_size)
     learning_rate = float(args.learning_rate)
     aux_loss_weight = float(args.aux_loss_weight)
     patch_strategy = str(args.patch_strategy).lower()
     val_patch_strategy = str(args.val_patch_strategy).lower()
-    is_toy = bool(args.toy)
-
-    classes = [int(c) for c in args.classes.split(",")]
-    class_balance = bool(args.class_balance)
 
     batch_validation_perc = float(args.batch_validation_perc)
     pretrained: bool = bool(args.pretrained)
 
-    patch_dim: Tuple[int, int] = tuple(
-        [int(x) for x in args.patch_dim.split(",")]
-    )
-    resize_dim: Tuple[int, int] = tuple(
-        [int(x) for x in args.resize_dim.split(",")]
-    )
+    patch_dim: Tuple[int, int] = tuple([int(x) for x in args.patch_dim.split(",")])
+    resize_dim: Tuple[int, int] = tuple([int(x) for x in args.resize_dim.split(",")])
     iou_thresholds = [float(x) for x in args.iou_thresholds.split(",")]
 
-    # train on the GPU or on the CPU, if a GPU is not available
-    device = (
-        torch.device("cuda")
-        if torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    # Train on GPU if available
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     log.info(f"Model Name: {model_name}")
     log.info(f"Epochs: {n_epochs}")
@@ -163,8 +164,6 @@ if __name__ == "__main__":
     log.info(f"Auxiliary Loss Weight: {aux_loss_weight}")
     log.info(f"Batch Size: {batch_size}")
     log.info(f"Patch Strategy: {patch_strategy}")
-    log.info(f"Classes:  {classes}")
-    log.info(f"Toy: {is_toy}")
     log.info(f"GPU: {torch.cuda.is_available()}")
     log.info(f"Patch Dimension: {patch_dim}")
     log.info(f"Resize Dimension: {resize_dim}")
@@ -173,12 +172,7 @@ if __name__ == "__main__":
     train_labels_filepath = join(train_dir, "train.json")
     val_labels_filepath = join(val_dir, "val.json")
 
-    # Toy Dataset for Integration Testing Purposes
-    Dataset = (
-        SemanticSegmentationPyTorchDataset
-        if not is_toy
-        else ToySemanticSegmentationDataset
-    )
+    Dataset = SemanticSegmentationPyTorchDataset
 
     # Validation patch strategy may differ from train patch strategy
     if val_patch_strategy == "":
@@ -244,11 +238,11 @@ if __name__ == "__main__":
     # define training and validation data loaders
     # drop_last True to avoid single instances which throw an error on batch norm layers
 
-    # Maxing the num_workers at 8 due to shared memory limitations
     num_workers = min(
         # Preferably use 2/3's of total cpus. If the cpu count is 1, it will be set to 0 which will result
         # in dataloader using the main thread
         int(round(multiprocessing.cpu_count() * 2 / 3)),
+        # Maxing the num_workers at 8 due to shared memory limitations
         8,
     )
 
@@ -270,43 +264,43 @@ if __name__ == "__main__":
     )
 
     # get the model using our helper function
-    if model_name == "fcn":
-        model = get_fcn_resnet50(num_classes, pretrained=pretrained)
-    elif model_name == "deeplab":
-        model = DeepLabModelWrapper(
+    if model_name == "fcn" or model_name == "fcn-resnet50":
+        model = FCNResNet50(num_classes, pretrained=pretrained)
+    elif model_name == "deeplab" or model_name == "deeplabv3":
+        model = DeepLabV3(
             num_classes,
             pretrained=pretrained,
             is_feature_extracting=pretrained,
-        )  # get_deeplabv3(num_classes, is_feature_extracting=pretrained)
-    else:
-        raise ValueError(
-            f'Provided model name "{model_name}" is not supported.'
         )
+    else:
+        raise ValueError(f'Provided model name "{model_name}" is not supported.')
 
     model = torch.nn.DataParallel(model)
     # move model to the right device
     model.to(device)
 
     # Create balanced cross entropy loss
-    if class_balance:
+    if loss == "balanced_cross_entropy":
         weights = semantic_segmentation_class_balancer(dataset)
         weights = weights.to(device)
         criterion = nn.CrossEntropyLoss(weight=weights)
-    else:
+    elif loss == "cross_entropy":
         criterion = nn.CrossEntropyLoss()
+    else:
+        warnings.warn(
+            f"The loss function {loss} is not available. Using the default CrossEntropyLoss instead."
+        )
+        criterion = nn.CrossEntropyLoss()
+
     criterion = criterion.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
         params, lr=learning_rate, momentum=0.9, weight_decay=0.0005
     )
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=3, gamma=0.1
-    )
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    metrics = get_semantic_segmentation_metrics(
-        num_classes, thresholds=iou_thresholds
-    )
+    metrics = get_semantic_segmentation_metrics(num_classes, thresholds=iou_thresholds)
     metrics = metrics.to(device)
     best_mean_iou = 0
 
@@ -408,5 +402,14 @@ if __name__ == "__main__":
                 join(model_dir, f"{model_name}_checkpoint_{epoch}.pth"),
             )
 
+    # Log best model
+    model_filename = f"{model_name}_final.pth"
     model.load_state_dict(best_model_wts)
-    torch.save(model.state_dict(), join(model_dir, f"{model_name}_final.pth"))
+    torch.save(model.state_dict(), join(model_dir, model_filename))
+    mlflow.log_params(hyperparameters)
+    mlflow.log_artifact(model_filename)
+
+    # Log augmentations
+    albumentations_filename = "augmentation.json"
+    A.save(augmentation, albumentations_filename)
+    mlflow.log_artifact(albumentations_filename)
