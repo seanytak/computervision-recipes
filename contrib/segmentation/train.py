@@ -15,7 +15,7 @@ import albumentations as A
 import mlflow
 import torch
 import torch.nn as nn
-from torch.utils.data.dataset import DataLoader
+from torch.utils.data import DataLoader
 
 from config.augmentation import preprocessing, augmentation
 from src.datasets.semantic_segmentation import (
