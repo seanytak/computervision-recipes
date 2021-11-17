@@ -284,8 +284,11 @@ if __name__ == "__main__":
     )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    metrics = semantic_segmentation_metrics(n_classes, thresholds=iou_thresholds)
-    metrics = metrics.to(device)
+    train_metrics = semantic_segmentation_metrics(n_classes, thresholds=iou_thresholds)
+    train_metrics = train_metrics.to(device)
+
+    val_metrics = semantic_segmentation_metrics(n_classes, thresholds=iou_thresholds)
+    val_metrics = val_metrics.to(device)
     best_mean_iou = 0
 
     best_model_wts: Dict = copy.deepcopy(model.state_dict())
@@ -327,7 +330,7 @@ if __name__ == "__main__":
 
             train_loss += loss.item() * images.size(0)
 
-            metrics.update(preds, targets)
+            train_metrics.update(preds, targets)
 
             print(
                 f"Train Epoch: {epoch} | Batch: {batch_num} | Batch Loss: {loss.item()} | Batch Time: {time.time() - batch_time}"
@@ -336,11 +339,11 @@ if __name__ == "__main__":
         train_loss /= len(train_dataset.dataset)
         print(f"Epoch: {epoch} | Train Loss: {train_loss}")
 
-        # Compute and log training metrics
-        results = metrics.compute()
+        # Compute and log training train_metrics
+        results = train_metrics.compute()
         results["loss"] = train_loss
         log_metrics(results, class_dict, split="train")
-        metrics.reset()
+        train_metrics.reset()
 
         # Switch to eval mode for validation
         model.eval()
@@ -362,7 +365,7 @@ if __name__ == "__main__":
                     preds = torch.argmax(outputs, dim=1)
 
                     val_loss += loss.item() * images.size(0)
-                    metrics.update(preds, targets)
+                    val_metrics.update(preds, targets)
 
                     print(
                         f"Validation Epoch: {epoch} | Batch {batch_num} | Batch Loss: {loss.item()}"
@@ -371,11 +374,11 @@ if __name__ == "__main__":
         val_loss /= len(val_dataloader.dataset)
         print(f"Epoch: {epoch} | Val Loss: {val_loss}")
 
-        # Compute and log validation metrics
-        results = metrics.compute()
+        # Compute and log validation train_metrics
+        results = val_metrics.compute()
         results["loss"] = val_loss
         log_metrics(results, class_dict, split="val")
-        metrics.reset()
+        val_metrics.reset()
 
         mean_iou = float(results["mean_iou_0_5"])
         if mean_iou > best_mean_iou:
