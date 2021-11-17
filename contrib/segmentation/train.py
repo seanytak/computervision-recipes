@@ -4,9 +4,9 @@ Used in conjunction with AML Training Pipeline
 
 Example Trial:
 python train.py \
-    --train-labels-filepath data/train_labels/labels.csv \
-    --val-labels-filepath data/val_labels/labels.csv \
-    --class-dict-path data/class_dict.csv \
+    --train-labels-filepath workshop_data/train_labels/labels.csv \
+    --val-labels-filepath workshop_data/val_labels/labels.csv \
+    --class-dict-path workshop_data/class_dict.csv \
     --labels-type rgb-masks \
     --model deeplab \
     --pretrained true \
@@ -55,7 +55,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def log_metrics(results: Dict[str, torch.Tensor], classes: int, split: str):
+def log_metrics(results: Dict[str, torch.Tensor], class_df: pd.DataFrame, split: str):
     """Log metrics to stdout and AML
 
     Parameters
@@ -67,13 +67,12 @@ def log_metrics(results: Dict[str, torch.Tensor], classes: int, split: str):
     split : {"train", "val", "test"}
         Split that the metrics are for
     """
-    # Import does not appear to work on some non-AML environments
-    from azureml.core.run import Run, _SubmittedRun
-
     # Get script logger
     log = logging.getLogger(__name__)
 
     split = split.capitalize()
+
+    class_dict = class_df.to_dict("index")
 
     for metric_name, result in results.items():
         log_name = f"[{split}] {metric_name}"
@@ -82,9 +81,10 @@ def log_metrics(results: Dict[str, torch.Tensor], classes: int, split: str):
 
             mlflow.log_metric(f"mean_{metric_name}", result)
         elif "per_class" in metric_name:
+            metric_name = metric_name[len("per_class_") :]
             result = {
-                f"{metric_name}_class_{c}": float(r)
-                for c, r in zip(range(classes), result)
+                f'{c}_{metric_name}_{class_dict[c]["name"]}': float(r)
+                for c, r in zip(range(len(class_dict)), result)
             }
 
             mlflow.log_metrics(result)
@@ -159,9 +159,8 @@ if __name__ == "__main__":
     # batch_validation_perc = float(args.batch_validation_perc)
     batch_validation_perc = 0.95
 
-    # TODO: Deal with these parameters
-    patch_dim: Tuple[int, int] = tuple([int(x) for x in args.patch_dim.split(",")])
-    resize_dim: Tuple[int, int] = tuple([int(x) for x in args.resize_dim.split(",")])
+    # patch_dim: Tuple[int, int] = tuple([int(x) for x in args.patch_dim.split(",")])
+    # resize_dim: Tuple[int, int] = tuple([int(x) for x in args.resize_dim.split(",")])
     iou_thresholds = [float(x) for x in args.iou_thresholds.split(",")]
 
     # Train on GPU if available
@@ -185,8 +184,8 @@ if __name__ == "__main__":
     log.info(f"Batch Size: {batch_size}")
     # log.info(f"Patch Strategy: {patch_strategy}")
     log.info(f"GPU: {torch.cuda.is_available()}")
-    log.info(f"Patch Dimension: {patch_dim}")
-    log.info(f"Resize Dimension: {resize_dim}")
+    # log.info(f"Patch Dimension: {patch_dim}")
+    # log.info(f"Resize Dimension: {resize_dim}")
     log.info(f"Pretrained: {pretrained}")
 
     if labels_type == "masks":
@@ -255,13 +254,11 @@ if __name__ == "__main__":
 
     # get the model using our helper function
     if model_name == "fcn" or model_name == "fcn-resnet50":
-        model = FCNResNet50(n_classes, pretrained=pretrained)
-    elif model_name == "deeplab" or model_name == "deeplabv3":
-        model = DeepLabV3(
-            n_classes,
-            pretrained=pretrained,
-            is_feature_extracting=pretrained,
+        model = FCNResNet50(
+            n_classes, pretrained=pretrained, is_feature_extracting=False
         )
+    elif model_name == "deeplab" or model_name == "deeplabv3":
+        model = DeepLabV3(n_classes, pretrained=pretrained, is_feature_extracting=False)
     else:
         raise ValueError(f'Provided model name "{model_name}" is not supported.')
 
@@ -330,7 +327,7 @@ if __name__ == "__main__":
 
             train_loss += loss.item() * images.size(0)
 
-            metrics(preds, targets)
+            metrics.update(preds, targets)
 
             print(
                 f"Train Epoch: {epoch} | Batch: {batch_num} | Batch Loss: {loss.item()} | Batch Time: {time.time() - batch_time}"
@@ -342,7 +339,7 @@ if __name__ == "__main__":
         # Compute and log training metrics
         results = metrics.compute()
         results["loss"] = train_loss
-        log_metrics(results, n_classes, split="train")
+        log_metrics(results, class_dict, split="train")
         metrics.reset()
 
         # Switch to eval mode for validation
@@ -365,7 +362,7 @@ if __name__ == "__main__":
                     preds = torch.argmax(outputs, dim=1)
 
                     val_loss += loss.item() * images.size(0)
-                    metrics(preds, targets)
+                    metrics.update(preds, targets)
 
                     print(
                         f"Validation Epoch: {epoch} | Batch {batch_num} | Batch Loss: {loss.item()}"
@@ -377,7 +374,7 @@ if __name__ == "__main__":
         # Compute and log validation metrics
         results = metrics.compute()
         results["loss"] = val_loss
-        log_metrics(results, n_classes, split="val")
+        log_metrics(results, class_dict, split="val")
         metrics.reset()
 
         mean_iou = float(results["mean_iou_0_5"])
@@ -390,13 +387,12 @@ if __name__ == "__main__":
             )
 
     # Log best model
-    model_filename = f"{model_name}_final.pth"
-    model_filepath = join("outputs", model_filename)
+    model_filepath = join("outputs", f"{model_name}_final.pth")
     model.load_state_dict(best_model_wts)
     torch.save(model.state_dict(), model_filepath)
     mlflow.log_artifact(model_filepath)
 
     # Log augmentations
-    albumentations_filename = "augmentation.json"
-    A.save(augmentation, albumentations_filename)
-    mlflow.log_artifact(albumentations_filename)
+    albumentations_filepath = join("outputs", "augmentation.json")
+    A.save(augmentation, albumentations_filepath)
+    mlflow.log_artifact(albumentations_filepath)
