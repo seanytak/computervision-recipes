@@ -4,9 +4,11 @@ import math
 from os.path import join
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
+import PIL
 
 import albumentations as A
 import numpy as np
+import pandas as pd
 import torch
 from PIL import Image
 from torch.utils.data.dataset import Dataset
@@ -14,9 +16,7 @@ from torch.utils.data.dataset import Dataset
 from .coco import CocoDataset
 
 BoundingBox = Union[Tuple[int, int, int, int], List[int]]
-SemanticSegmentationItem = Tuple[
-    np.ndarray, List[BoundingBox], np.ndarray, List[int]
-]
+SemanticSegmentationItem = Tuple[np.ndarray, List[BoundingBox], np.ndarray, List[int]]
 
 
 def construct_center_crop_on_bbox_transform(
@@ -59,9 +59,7 @@ def construct_center_crop_on_bbox_transform(
         [
             A.Crop(x1, y1, x2, y2),
         ],
-        bbox_params=A.BboxParams(
-            format="pascal_voc", label_fields=["class_labels"]
-        ),
+        bbox_params=A.BboxParams(format="pascal_voc", label_fields=["class_labels"]),
     )
 
     return transform
@@ -117,9 +115,7 @@ def resize_until_center_crop_on_bbox(
         [
             A.Resize(height, width),
         ],
-        bbox_params=A.BboxParams(
-            format="pascal_voc", label_fields=["class_labels"]
-        ),
+        bbox_params=A.BboxParams(format="pascal_voc", label_fields=["class_labels"]),
     )
     augmented = transform(
         image=image, bboxes=bboxes, mask=mask, class_labels=class_labels
@@ -267,9 +263,7 @@ class SemanticSegmentationStochasticPatchingDataset(torch.utils.data.Dataset):
         return len(self.patch_paths)
 
 
-class SemanticSegmentationWithDeterministicPatchingDataset(
-    torch.utils.data.Dataset
-):
+class SemanticSegmentationWithDeterministicPatchingDataset(torch.utils.data.Dataset):
     def __init__(self, coco: CocoDataset, patch_dim: Tuple[int, int]):
         self.coco = coco
         self.patch_dim = patch_dim
@@ -399,7 +393,20 @@ class SemanticSegmentationDatasetFullCoverage:
         return self.length
 
 
-class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
+class MaskLabelsDataset(torch.utils.data.Dataset):
+    """PyTorch Dataset for semantic segmentation task if masks as images / arrays are already available"""
+
+    def __init__(self, csv_filepath: str):
+        self.labels = pd.read_csv(csv_filepath)
+
+    def __getitem__(self, idx):
+        row = self.labels.iloc[idx]
+        image = np.asarray(PIL.Image.open(row["image_filepath"]))
+        mask = np.asarray(PIL.Image.open(row[idx]))
+        return image, mask
+
+
+class SemanticSegmentationDataset(torch.utils.data.Dataset):
 
     _available_patch_strategies = set(
         ["resize", "deterministic_center_crop", "crop_all"]
@@ -415,13 +422,10 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         dataset: Dataset,
-        labels_filepath: str,
-        classes: List[int],
-        annotation_format: str,
         root_dir: str,
         cache_dir: Optional[str] = None,
-        augmentation: Optional[Callable] = None,
         preprocessing: Optional[Callable] = None,
+        augmentation: Optional[Callable] = None,
         patch_strategy: str = "deterministic_center_crop",
         patch_dim: Optional[Tuple[int, int]] = None,
         resize_dim: Optional[Tuple[int, int]] = None,
@@ -429,7 +433,7 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
     ):
         if (
             patch_strategy
-            not in SemanticSegmentationPyTorchDataset._available_patch_strategies
+            not in SemanticSegmentationDataset._available_patch_strategies
         ):
             raise ValueError(
                 f"Parameter `patch_strategy` must be one of {self._available_patch_strategies}"
@@ -437,7 +441,7 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
 
         if (
             cache_strategy
-            not in SemanticSegmentationPyTorchDataset._available_cache_strategies
+            not in SemanticSegmentationDataset._available_cache_strategies
         ):
             raise ValueError(
                 f"Parameter `cache_strategy` must be one of {self._available_cache_strategies}"
@@ -447,9 +451,7 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
             raise ValueError(
                 'Parameter `resize_dim` must not be None if `patch_strategy` is "resize"'
             )
-        elif (
-            patch_strategy == "deterministic_center_crop" and patch_dim is None
-        ):
+        elif patch_strategy == "deterministic_center_crop" and patch_dim is None:
             raise ValueError(
                 'Parameter `patch_dim` must not be None if `patch_strategy` is "deterministic_center_crop"'
             )
@@ -459,19 +461,13 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
             )
 
         if patch_strategy == "resize":
-            self.dataset = SemanticSegmentationResizeDataset(
-                dataset, resize_dim
-            )
+            self.dataset = SemanticSegmentationResizeDataset(dataset, resize_dim)
         elif patch_strategy == "deterministic_center_crop":
-            self.dataset = (
-                SemanticSegmentationWithDeterministicPatchingDataset(
-                    dataset, patch_dim
-                )
-            )
-        elif patch_strategy == "crop_all":
-            self.dataset = SemanticSegmentationDatasetFullCoverage(
+            self.dataset = SemanticSegmentationWithDeterministicPatchingDataset(
                 dataset, patch_dim
             )
+        elif patch_strategy == "crop_all":
+            self.dataset = SemanticSegmentationDatasetFullCoverage(dataset, patch_dim)
 
         self.root_dir = root_dir
         self.cache_dir = cache_dir
@@ -538,9 +534,7 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
                 )
 
             if self.cache_strategy == "disk":
-                self._write_item_to_disk(
-                    idx, image, bboxes, mask, class_labels
-                )
+                self._write_item_to_disk(idx, image, bboxes, mask, class_labels)
 
         # apply augmentations via albumentations
         if self.augmentation:
@@ -561,16 +555,3 @@ class SemanticSegmentationPyTorchDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataset)
-
-
-class ToySemanticSegmentationDataset(torch.utils.data.Dataset):
-    """Toy semantic segmentation dataset for integration testing purposes"""
-
-    def __init__(self, *args, **kwargs):
-        self._dataset = SemanticSegmentationPyTorchDataset(*args, **kwargs)
-
-    def __getitem__(self, idx):
-        return self._dataset[idx]
-
-    def __len__(self):
-        return min(len(self._dataset), 8)
