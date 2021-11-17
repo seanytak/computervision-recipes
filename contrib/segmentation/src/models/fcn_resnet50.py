@@ -18,9 +18,8 @@ class FCNResNet50(nn.Module):
             True if the convolutional layers should be set to non-trainable retaining their original
             parameters
         """
-        self.model = torchvision.self.models.segmentation.fcn_resnet50(
-            pretrained=pretrained
-        )
+        super().__init__()
+        self.model = torchvision.models.segmentation.fcn_resnet50(pretrained=pretrained)
 
         if is_feature_extracting:
             for param in self.model.parameters():
