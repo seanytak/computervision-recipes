@@ -128,9 +128,6 @@ classification/data/*
 # don't save .swp files
 *.swp
 
-# don't save .csv files
-*.csv
-
 # don't save pickles
 *.pkl
 
