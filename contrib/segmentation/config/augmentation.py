@@ -31,7 +31,6 @@ def _augmentation(patch_dim: Tuple[int, int] = (512, 512)):
             A.VerticalFlip(p=0.5),
             A.Blur(p=0.25),
             A.ColorJitter(p=0.25),
-            A.GaussNoise(p=0.25),
             A.CoarseDropout(p=0.5, max_holes=64, max_height=8, max_width=8),
             A.RandomBrightnessContrast(p=0.25),
         ],
