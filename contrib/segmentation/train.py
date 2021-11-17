@@ -105,6 +105,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=0.0005)
     parser.add_argument("--aux-loss-weight", type=float, default=0.4)
     parser.add_argument(
         "--patch-strategy",
@@ -152,6 +154,8 @@ if __name__ == "__main__":
     n_epochs = int(args.epochs)
     batch_size = int(args.batch_size)
     learning_rate = float(args.learning_rate)
+    momentum = float(args.momentum)
+    weight_decay = float(args.weight_decay)
     aux_loss_weight = float(args.aux_loss_weight)
 
     # patch_strategy = str(args.patch_strategy).lower()
@@ -280,7 +284,7 @@ if __name__ == "__main__":
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
-        params, lr=learning_rate, momentum=0.9, weight_decay=0.0005
+        params, lr=learning_rate, momentum=momentum, weight_decay=weight_decay
     )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
