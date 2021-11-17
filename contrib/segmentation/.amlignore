@@ -1,6 +1,5 @@
 assets/
-config/
-data/
+mlruns/
 outputs/
 
 # Byte-compiled / optimized / DLL files
