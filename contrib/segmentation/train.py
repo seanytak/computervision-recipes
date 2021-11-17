@@ -79,7 +79,7 @@ def log_metrics(results: Dict[str, torch.Tensor], class_df: pd.DataFrame, split:
         if "mean" in metric_name:
             result = float(result)
 
-            mlflow.log_metric(f"mean_{metric_name}", result)
+            mlflow.log_metric(f"{metric_name}", result)
         elif "per_class" in metric_name:
             metric_name = metric_name[len("per_class_") :]
             result = {
